@@ -90,10 +90,11 @@ def run_in_loop(driver):
     print("Running scraping loop %d" % num)
     num += 1
     driver.get(FLAGS.permit_availability_url)
+    # TODO: For some reason the page doesn't fully load every so often. Catch
+    # the exception and simply retry.
     try:
       select_options(driver)
 
-      # Sleep for a few seconds for the dynamic table to load
       print("Waiting 5 seconds for the dynamic table to load...")
       time.sleep(5)
 
@@ -101,8 +102,6 @@ def run_in_loop(driver):
       est_now = dt.now(tz=est_tz)
       # Read 7 days of permit info.
       available_date_set = set()
-      # For some reason the table isn't populated every so often. Skip that
-      # run.
       for ii in range(2, 9):
         val = driver.find_element_by_xpath(
             '//*[@id="per-availability-main"]/div/div[1]/div[3]/div[2]/div/table/tbody/tr[5]/td[%d]'
@@ -116,7 +115,6 @@ def run_in_loop(driver):
       time.sleep(60)
       continue
 
-    # Check if we need to send a notification
     maybe_send_notification(available_date_set)
     print("Sleeping %d seconds before running next loop..." % \
             FLAGS.scrape_interval_secs)
