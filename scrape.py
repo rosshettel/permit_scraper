@@ -3,8 +3,16 @@
 The script expects a local smtp server to have been setup for email
 notifications.
 
-Sample command:
-python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com
+Sample commands:
+1) For recreation.gov
+python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com \
+        --mode=permits
+
+2) To get notifications about WA ferries
+python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com \
+        --mode=ferry --ferry_from="Orcas Island" --ferry_to="Anacortes" \
+        --ferry_depart_after="10:00 AM" --ferry_depart_before="4:00 PM" \
+        --ferry_date="07052020" --scrape_interval_secs=60
 
 """
 
@@ -20,6 +28,7 @@ from absl import flags
 from absl import app
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
 FLAGS = flags.FLAGS
@@ -32,6 +41,20 @@ flags.DEFINE_string(
     "https://www.recreation.gov/permits/233273/registration/detailed-availability",
     "Link to the recreation.gov's detailed availability page for the desired "
     "permit.")
+flags.DEFINE_enum("mode", "permits", ["permits", "ferry"],
+                  "Which mode to run the script in")
+flags.DEFINE_string(
+    "ferry_url",
+    "https://secureapps.wsdot.wa.gov/ferries/reservations/Vehicle/SailingSchedule.aspx",
+    "Link to wsdot ferry reservation page")
+flags.DEFINE_string("ferry_from", "Anacortes", "Ferry Start")
+flags.DEFINE_string("ferry_to", "Orcas Island", "Ferry End")
+flags.DEFINE_string("ferry_depart_after", "12:00 PM",
+                    "Only interested in ferries leaving after this time")
+flags.DEFINE_string("ferry_depart_before", "6:00 PM",
+                    "Only interested in ferries leaving before this time")
+flags.DEFINE_string("ferry_date", "07052020",
+                    "Date for ferry departure (Format: MMDDYYYY)")
 
 # Only notify once per date
 skip_notification_date_set = set()
@@ -61,12 +84,12 @@ def maybe_send_notification(date_set):
     print("Skipping already notified dates " + ", ".join(skipped_dates))
   if len(filtered_dates) == 0:
     return
-  subject = "Found availability on " + ", ".join(filtered_dates)
+  subject = "Found availability for " + ", ".join(filtered_dates)
   send_email(FLAGS.email_addr, subject, subject)
   skip_notification_date_set.update(filtered_dates)
 
 
-def select_options(driver):
+def select_permit_options(driver):
   overnight = Select(
       driver.find_element_by_xpath('//*[@id="division-selection"]'))
   overnight.select_by_visible_text('Overnight')
@@ -84,22 +107,22 @@ def select_options(driver):
   group_dropdown.click()
 
 
-def run_in_loop(driver):
+def permit_loop(driver):
   num = 0
   while True:
     print("Running scraping loop %d" % num)
     num += 1
-    driver.get(FLAGS.permit_availability_url)
+    est_tz = pytz.timezone("US/Eastern")
+    est_now = dt.now(tz=est_tz)
+    today_date = est_now.strftime("%Y-%m-%d")
+    driver.get("%s?date=%s" % (FLAGS.permit_availability_url, today_date))
     # TODO: For some reason the page doesn't fully load every so often. Catch
     # the exception and simply retry.
     try:
-      select_options(driver)
-
+      select_permit_options(driver)
       print("Waiting 5 seconds for the dynamic table to load...")
       time.sleep(5)
 
-      est_tz = pytz.timezone("US/Eastern")
-      est_now = dt.now(tz=est_tz)
       # Read 7 days of permit info.
       available_date_set = set()
       for ii in range(2, 9):
@@ -107,9 +130,9 @@ def run_in_loop(driver):
             '//*[@id="per-availability-main"]/div/div[1]/div[3]/div[2]/div/table/tbody/tr[5]/td[%d]'
             % ii)
         if val.text != '' and int(val.text) > 0:
-          date_str = (est_now + timedelta(days=ii)).strftime("%m/%d")
-          print("Found availability on %s" % date_str)
-          available_date_set.add(date_str)
+          day_month_str = (est_now + timedelta(days=ii)).strftime("%m/%d")
+          print("Found availability on %s" % day_month_str)
+          available_date_set.add(day_month_str)
     except Exception as e:
       print("Error: %s. Rerunning loop after sleeping 1 minute..." % str(e))
       time.sleep(60)
@@ -121,6 +144,75 @@ def run_in_loop(driver):
     time.sleep(FLAGS.scrape_interval_secs)
 
 
+def select_ferry_options(driver):
+  start = Select(
+      driver.find_element_by_xpath('//*[@id="MainContent_dlFromTermList"]'))
+  start.select_by_visible_text(FLAGS.ferry_from)
+  time.sleep(2)
+  end = Select(
+      driver.find_element_by_xpath('//*[@id="MainContent_dlToTermList"]'))
+  end.select_by_visible_text(FLAGS.ferry_to)
+  time.sleep(2)
+  date = driver.find_element_by_xpath('//*[@id="MainContent_txtDatePicker"]')
+  date.click()
+  date.send_keys(Keys.CONTROL, 'a')
+  date.send_keys(Keys.BACKSPACE)
+  date.send_keys(FLAGS.ferry_date)
+  date.send_keys(Keys.ESCAPE)
+
+  vehicle_size = Select(
+      driver.find_element_by_xpath('//*[@id="MainContent_dlVehicle"]'))
+  vehicle_size.select_by_index(2)
+  time.sleep(2)
+  vehicle_height = Select(
+      driver.find_element_by_xpath('//*[@id="MainContent_ddlCarTruck14To22"]'))
+  vehicle_height.select_by_index(1)
+  time.sleep(2)
+  show_avail = driver.find_element_by_xpath(
+      '//*[@id="MainContent_btnContinue"]/h4')
+  show_avail.click()
+  time.sleep(2)
+
+
+def ferry_reservation_loop(driver):
+  num = 0
+  time_fmt = '%I:%M %p'
+  depart_after = dt.strptime(FLAGS.ferry_depart_after.strip(), time_fmt)
+  depart_before = dt.strptime(FLAGS.ferry_depart_before.strip(), time_fmt)
+  times_available = set()
+  driver.get(FLAGS.ferry_url)
+  select_ferry_options(driver)
+  while True:
+    print("Running scraping loop %d" % num)
+    num += 1
+
+    try:
+      times = driver.find_elements_by_xpath(
+          '//*[@id="MainContent_gvschedule"]/tbody/tr/td[2]')
+      availability = driver.find_elements_by_xpath(
+          '//*[@id="MainContent_gvschedule"]/tbody/tr/td[3]')
+      for ii in range(len(times)):
+        time_str = times[ii].text.strip()
+        avail_str = availability[ii].text.strip()
+        ferry_time = dt.strptime(time_str, time_fmt)
+        if ferry_time < depart_after or ferry_time > depart_before:
+          continue
+        if avail_str.find("Space Available") >= 0:
+          times_available.add(time_str)
+    except Exception as e:
+      print("Error: %s. Rerunning loop after sleeping 1 minute..." % str(e))
+      time.sleep(60)
+      continue
+    maybe_send_notification(times_available)
+    print("Sleeping %d seconds before running next loop..." % \
+            FLAGS.scrape_interval_secs)
+    time.sleep(FLAGS.scrape_interval_secs)
+    refresh = driver.find_element_by_xpath(
+            '//*[@id="MainContent_btnRefresh"]/h4')
+    refresh.click()
+    time.sleep(2)
+
+
 def main(_):
   opts = Options()
   if FLAGS.headless:
@@ -128,7 +220,10 @@ def main(_):
   driver = webdriver.Chrome(options=opts)
   driver.set_window_size(1920, 1080)
   driver.implicitly_wait(3)
-  run_in_loop(driver)
+  if FLAGS.mode == "permits":
+    permit_loop(driver)
+  else:
+    ferry_reservation_loop(driver)
 
 
 if __name__ == "__main__":
