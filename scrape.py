@@ -9,10 +9,10 @@ python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com \
         --mode=permits
 
 2) To get notifications about WA ferries
-python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com \
+python3 scrape.py --scrape_interval_secs=60 --email_addr=foo@bar.com \
         --mode=ferry --ferry_from="Orcas Island" --ferry_to="Anacortes" \
         --ferry_depart_after="10:00 AM" --ferry_depart_before="4:00 PM" \
-        --ferry_date="07052020" --scrape_interval_secs=60
+        --ferry_date="07052020"
 
 """
 
