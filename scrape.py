@@ -14,6 +14,12 @@ python3 scrape.py --scrape_interval_secs=60 --email_addr=foo@bar.com \
         --ferry_depart_after="10:00 AM" --ferry_depart_before="4:00 PM" \
         --ferry_date="07052020"
 
+3) To get notifications about Core enchantment permit availability for the
+   months of July/August
+python3 scrape.py --scrape_interval_secs=60 --email_addr=foo@bar.com \
+        --permit_api_months_to_query="2020-07-01,2020-08-01" \
+        --mode=permits_json
+
 """
 
 from datetime import datetime as dt
@@ -64,6 +70,10 @@ flags.DEFINE_string(
     "permit_api_url",
     "https://www.recreation.gov/api/permits/233273/availability/month",
     "Base URL to query monthly availability")
+flags.DEFINE_list(
+    "permit_api_months_to_query", "2020-07-01,2020-08-01",
+    "First day of the month for months that need to be queried for permit "
+    "availability")
 
 # Only notify once per date
 skip_notification_date_set = set()
@@ -235,7 +245,7 @@ def permit_json_loop():
         "(KHTML, like Gecko) Chrome/83.0.4103.106 Safari/537.36")
 
     available_date_set = set()
-    for start_date in ["2020-07-01", "2020-08-01"]:
+    for start_date in FLAGS.permit_api_months_to_query:
       url = "%s?start_date=%sT00:00:00.000Z" % (FLAGS.permit_api_url,
                                                 start_date)
       response = requests.get(url, headers=headers)
