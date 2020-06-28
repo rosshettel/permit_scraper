@@ -22,16 +22,19 @@ import email.message
 import email.utils
 import smtplib
 import time
-import pytz
 
 from absl import flags
 from absl import app
+import pytz
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
 FLAGS = flags.FLAGS
+flags.DEFINE_enum("mode", "permits", ["permits", "permits_json", "ferry"],
+                  "Which mode to run the script in")
 flags.DEFINE_bool("headless", True, "If true, runs chrome in headless mode")
 flags.DEFINE_integer("scrape_interval_secs", 10,
                      "How often to run the scraping")
@@ -41,8 +44,8 @@ flags.DEFINE_string(
     "https://www.recreation.gov/permits/233273/registration/detailed-availability",
     "Link to the recreation.gov's detailed availability page for the desired "
     "permit.")
-flags.DEFINE_enum("mode", "permits", ["permits", "ferry"],
-                  "Which mode to run the script in")
+
+# Flags for the ferry mode
 flags.DEFINE_string(
     "ferry_url",
     "https://secureapps.wsdot.wa.gov/ferries/reservations/Vehicle/SailingSchedule.aspx",
@@ -55,6 +58,12 @@ flags.DEFINE_string("ferry_depart_before", "6:00 PM",
                     "Only interested in ferries leaving before this time")
 flags.DEFINE_string("ferry_date", "07052020",
                     "Date for ferry departure (Format: MMDDYYYY)")
+
+# Flags for the permit JSON mode
+flags.DEFINE_string(
+    "permit_api_url",
+    "https://www.recreation.gov/api/permits/233273/availability/month",
+    "Base URL to query monthly availability")
 
 # Only notify once per date
 skip_notification_date_set = set()
@@ -208,12 +217,51 @@ def ferry_reservation_loop(driver):
             FLAGS.scrape_interval_secs)
     time.sleep(FLAGS.scrape_interval_secs)
     refresh = driver.find_element_by_xpath(
-            '//*[@id="MainContent_btnRefresh"]/h4')
+        '//*[@id="MainContent_btnRefresh"]/h4')
     refresh.click()
     time.sleep(2)
 
 
+def permit_json_loop():
+  num = 0
+  while True:
+    print("Running scraping loop %d" % num)
+    num += 1
+    headers = {}
+    headers["content-type"] = "application/json"
+    headers["cache-control"] = "no-cache, no-store, must-revalidate"
+    headers["user-agent"] = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/83.0.4103.106 Safari/537.36")
+
+    available_date_set = set()
+    for start_date in ["2020-07-01", "2020-08-01"]:
+      url = "%s?start_date=%sT00:00:00.000Z" % (FLAGS.permit_api_url,
+                                                start_date)
+      response = requests.get(url, headers=headers)
+      if response.status_code != 200:
+        print("Error fetching URL %s: Received HTTP status code %s" %
+              (url, str(response.status_code)))
+        continue
+      avail_json = response.json()
+      all_availability = avail_json['payload']['availability']
+      core_availability = all_availability['30']['date_availability']
+      for k, v in core_availability.items():
+        date = k[0:10]
+        if v['remaining'] > 0:
+          available_date_set.add(date)
+
+    maybe_send_notification(available_date_set)
+    print("Sleeping %d seconds before running next loop..." % \
+            FLAGS.scrape_interval_secs)
+    time.sleep(FLAGS.scrape_interval_secs)
+
+
 def main(_):
+  if FLAGS.mode == "permits_json":
+    permit_json_loop()
+    return
+
   opts = Options()
   if FLAGS.headless:
     opts.add_argument('--headless')
