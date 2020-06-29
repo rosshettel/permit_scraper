@@ -90,7 +90,7 @@ def send_email(to_email, subject, body):
   msg.add_header('Content-Type', 'text')
   msg.set_payload(body)
 
-  print("Sending email with subject %s to %s" % (subject, to_email))
+  print("Sending email with subject '%s' to %s" % (subject, to_email))
   smtp_obj = smtplib.SMTP("localhost")
   smtp_obj.sendmail(msg['From'], [msg['To']], msg.as_string())
   smtp_obj.quit()
@@ -103,7 +103,8 @@ def maybe_send_notification(date_set):
     print("Skipping already notified dates " + ", ".join(skipped_dates))
   if len(filtered_dates) == 0:
     return
-  subject = "Found availability for " + ", ".join(filtered_dates)
+  subject = "Found %s availability for %s" % (FLAGS.mode,
+                                              ", ".join(filtered_dates))
   send_email(FLAGS.email_addr, subject, subject)
   skip_notification_date_set.update(filtered_dates)
 
@@ -198,13 +199,13 @@ def ferry_reservation_loop(driver):
   time_fmt = '%I:%M %p'
   depart_after = dt.strptime(FLAGS.ferry_depart_after.strip(), time_fmt)
   depart_before = dt.strptime(FLAGS.ferry_depart_before.strip(), time_fmt)
-  times_available = set()
   driver.get(FLAGS.ferry_url)
   select_ferry_options(driver)
   while True:
     print("Running scraping loop %d" % num)
     num += 1
 
+    times_available = set()
     try:
       times = driver.find_elements_by_xpath(
           '//*[@id="MainContent_gvschedule"]/tbody/tr/td[2]')
@@ -248,10 +249,16 @@ def permit_json_loop():
     for start_date in FLAGS.permit_api_months_to_query:
       url = "%s?start_date=%sT00:00:00.000Z" % (FLAGS.permit_api_url,
                                                 start_date)
-      response = requests.get(url, headers=headers)
-      if response.status_code != 200:
-        print("Error fetching URL %s: Received HTTP status code %s" %
-              (url, str(response.status_code)))
+      response = None
+      try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+          print("Error fetching URL %s: Received HTTP status code %s" %
+                (url, str(response.status_code)))
+          continue
+      except Exception as e:
+        print("Error: %s. Rerunning loop after sleeping 1 minute..." % str(e))
+        time.sleep(60)
         continue
       avail_json = response.json()
       all_availability = avail_json['payload']['availability']
