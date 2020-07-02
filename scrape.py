@@ -116,10 +116,10 @@ def select_permit_options(driver):
 
   # Select number of people in the group
   group_dropdown = driver.find_element_by_xpath(
-      '//*[@id="guest-counter-QuotaUsageByMember"]/button/span[1]')
+      '//*[@id="guest-counter-QuotaUsageByMember"]/span[1]')
   group_dropdown.click()
   group_size = driver.find_element_by_xpath(
-      '//*[@id="guest-counter-QuotaUsageByMember"]/div/div[1]/div/div[2]/div/div/button[2]'
+      '//*[@id="guest-counter-QuotaUsageByMember-popup"]/div/div[1]/div/div/div[1]/div[2]/div/div/button[2]'
   )
   # Look for permits for two people
   group_size.click()
@@ -150,7 +150,7 @@ def permit_loop(driver):
             '//*[@id="per-availability-main"]/div/div[1]/div[3]/div[2]/div/table/tbody/tr[5]/td[%d]'
             % ii)
         if val.text != '' and int(val.text) > 0:
-          day_month_str = (est_now + timedelta(days=ii)).strftime("%m/%d")
+          day_month_str = (est_now + timedelta(days=(ii - 2))).strftime("%m/%d")
           print("Found availability on %s" % day_month_str)
           available_date_set.add(day_month_str)
     except Exception as e:
