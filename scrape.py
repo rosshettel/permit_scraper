@@ -6,7 +6,7 @@ notifications.
 Sample commands:
 1) For recreation.gov
 python3 scrape.py --scrape_interval_secs=600 --email_addr=foo@bar.com \
-        --mode=permits
+        --mode=permits --chrome_user_data_dir=/home/user/.config/chrome/Profile/
 
 2) To get notifications about WA ferries
 python3 scrape.py --scrape_interval_secs=60 --email_addr=foo@bar.com \
@@ -35,13 +35,20 @@ import pytz
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.wait import WebDriverWait
 
 FLAGS = flags.FLAGS
 flags.DEFINE_enum("mode", "permits", ["permits", "permits_json", "ferry"],
                   "Which mode to run the script in")
 flags.DEFINE_bool("headless", True, "If true, runs chrome in headless mode")
+flags.DEFINE_string(
+    "chrome_user_data_dir", "/path/to/dir",
+    "Using an existing chrome profile will allow the browser to be logged into "
+    "recreation.gov (or other sites)")
 flags.DEFINE_integer("scrape_interval_secs", 10,
                      "How often to run the scraping")
 flags.DEFINE_string("email_addr", None, "Where to send the email notification")
@@ -50,6 +57,12 @@ flags.DEFINE_string(
     "https://www.recreation.gov/permits/233273/registration/detailed-availability",
     "Link to the recreation.gov's detailed availability page for the desired "
     "permit.")
+flags.DEFINE_list(
+    "permit_dates_to_add_to_cart", "07/17,07/16",
+    "If any of these days is available, add to cart and sleep for 15 minutes. "
+    "Only do this if running with a browser (not headless)")
+flags.DEFINE_integer("permit_desired_slots", 3,
+                     "Desired number of permits to add to cart")
 
 # Flags for the ferry mode
 flags.DEFINE_string(
@@ -112,7 +125,11 @@ def maybe_send_notification(date_set):
 def select_permit_options(driver):
   overnight = Select(
       driver.find_element_by_xpath('//*[@id="division-selection"]'))
-  overnight.select_by_visible_text('Overnight')
+  overnight.select_by_visible_text("Overnight")
+
+  people = Select(
+      driver.find_element_by_xpath('//*[@id="quota-view-selector"]'))
+  people.select_by_visible_text("People")
 
   # Select number of people in the group
   group_dropdown = driver.find_element_by_xpath(
@@ -122,9 +139,50 @@ def select_permit_options(driver):
       '//*[@id="guest-counter-QuotaUsageByMember-popup"]/div/div[1]/div/div/div[1]/div[2]/div/div/button[2]'
   )
   # Look for permits for two people
-  group_size.click()
-  group_size.click()
+  for _ in range(0, FLAGS.permit_desired_slots):
+    group_size.click()
   group_dropdown.click()
+
+
+def maybe_add_to_cart_and_sleep(driver, availability_map):
+  book_date = None
+  for date in FLAGS.permit_dates_to_add_to_cart:
+    if date in availability_map.keys():
+      book_date = date
+      break
+
+  if book_date is None:
+    return
+  permit_val = driver.find_element_by_xpath(availability_map[book_date])
+  permit_val.click()
+
+  book_button = driver.find_element_by_xpath(
+      '//*[@id="per-availability-main"]/div/div[1]/div[3]/div[3]/div/div/div/button'
+  )
+  book_button.click()
+
+  WebDriverWait(driver, 5).until(
+      EC.presence_of_element_located((By.ID, "exitDateCalendar")))
+  end_dt = dt.strptime(permit_date, "%Y-%m-%d") + timedelta(days=2)
+  exit_elem = driver.find_element_by_id('exitDateCalendar')
+  exit_elem.click()
+  exit_elem.send_keys(end_dt.strftime("%Y/%m/%d"))
+  exit_elem.send_keys(Keys.TAB)
+
+  agree_elem = driver.find_element_by_xpath(
+      '//*[@id="form-name"]/fieldset/section/div[3]/label/span')
+  agree_elem.click()
+
+  while True:
+    add_to_cart_button = driver.find_element_by_id('add-permit-to-cart-button')
+    add_to_cart_button.click()
+    time.sleep(500)
+    modify_elem = driver.find_element_by_xpath(
+        '//*[@id="page-body"]/div/div/div/div[1]/div[1]/div/div[2]/div[1]/div[4]/button[1]/span'
+    )
+    modify_elem.click()
+    WebDriverWait(driver, 5).until(
+        EC.presence_of_element_located((By.ID, "exitDateCalendar")))
 
 
 def permit_loop(driver):
@@ -144,21 +202,26 @@ def permit_loop(driver):
       time.sleep(5)
 
       # Read 7 days of permit info.
-      available_date_set = set()
+      availability_map = {}
       for ii in range(2, 9):
-        val = driver.find_element_by_xpath(
-            '//*[@id="per-availability-main"]/div/div[1]/div[3]/div[2]/div/table/tbody/tr[5]/td[%d]'
-            % ii)
-        if val.text != '' and int(val.text) > 0:
+        val_xpath = ('//*[@id="per-availability-main"]/div/div[1]/div[3]/div[2]'
+                     '/div/table/tbody/tr[5]/td[%d]') % ii
+
+        val = driver.find_element_by_xpath(val_xpath)
+        if val.text == '':
+          continue
+        num_slots = int(val.text)
+        if num_slots > 0:
           day_month_str = (est_now + timedelta(days=(ii - 2))).strftime("%m/%d")
           print("Found availability on %s" % day_month_str)
-          available_date_set.add(day_month_str)
+          availability_map[day_month_str] = val_xpath
     except Exception as e:
       print("Error: %s. Rerunning loop after sleeping 1 minute..." % str(e))
       time.sleep(60)
       continue
 
-    maybe_send_notification(available_date_set)
+    maybe_send_notification(set(availability_map.keys()))
+    maybe_add_to_cart_and_sleep(driver, availability_map)
     print("Sleeping %d seconds before running next loop..." % \
             FLAGS.scrape_interval_secs)
     time.sleep(FLAGS.scrape_interval_secs)
@@ -280,6 +343,7 @@ def main(_):
     return
 
   opts = Options()
+  opts.add_argument(FLAGS.chrome_user_data_dir)
   if FLAGS.headless:
     opts.add_argument('--headless')
   driver = webdriver.Chrome(options=opts)
