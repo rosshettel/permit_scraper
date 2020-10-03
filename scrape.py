@@ -34,6 +34,7 @@ from absl import app
 import pytz
 import requests
 from selenium import webdriver
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -127,6 +128,7 @@ def select_permit_options(driver):
       driver.find_element_by_xpath('//*[@id="division-selection"]'))
   overnight.select_by_visible_text("Overnight")
 
+  time.sleep(1)
   people = Select(
       driver.find_element_by_xpath('//*[@id="quota-view-selector"]'))
   people.select_by_visible_text("People")
@@ -138,13 +140,16 @@ def select_permit_options(driver):
   group_size = driver.find_element_by_xpath(
       '//*[@id="guest-counter-QuotaUsageByMember-popup"]/div/div[1]/div/div/div[1]/div[2]/div/div/button[2]'
   )
-  # Look for permits for two people
+  # Look for permits for the requested number of people
   for _ in range(0, FLAGS.permit_desired_slots):
     group_size.click()
   group_dropdown.click()
 
 
 def maybe_add_to_cart_and_sleep(driver, availability_map):
+  if len(availability_map) == 0:
+    return
+
   book_date = None
   for date in FLAGS.permit_dates_to_add_to_cart:
     if date in availability_map.keys():
@@ -152,7 +157,10 @@ def maybe_add_to_cart_and_sleep(driver, availability_map):
       break
 
   if book_date is None:
+    print("Requested dates unavailable. Not adding to cart")
     return
+
+  print("Requested date (%s) available. Trying to book..." % book_date)
   permit_val = driver.find_element_by_xpath(availability_map[book_date])
   permit_val.click()
 
@@ -161,13 +169,13 @@ def maybe_add_to_cart_and_sleep(driver, availability_map):
   )
   book_button.click()
 
+  #time.sleep(5)
   WebDriverWait(driver, 5).until(
-      EC.presence_of_element_located((By.ID, "exitDateCalendar")))
-  end_dt = dt.strptime(permit_date, "%Y-%m-%d") + timedelta(days=2)
+      EC.presence_of_element_located((By.ID, 'add-permit-to-cart-button')))
+  end_dt = dt.strptime(book_date + "/2020", "%m/%d/%Y") + timedelta(days=2)
   exit_elem = driver.find_element_by_id('exitDateCalendar')
   exit_elem.click()
-  exit_elem.send_keys(end_dt.strftime("%Y/%m/%d"))
-  exit_elem.send_keys(Keys.TAB)
+  exit_elem.send_keys(end_dt.strftime("%m/%d/%Y"))
 
   agree_elem = driver.find_element_by_xpath(
       '//*[@id="form-name"]/fieldset/section/div[3]/label/span')
@@ -175,7 +183,10 @@ def maybe_add_to_cart_and_sleep(driver, availability_map):
 
   while True:
     add_to_cart_button = driver.find_element_by_id('add-permit-to-cart-button')
-    add_to_cart_button.click()
+    actions = ActionChains(driver)
+    actions.click(add_to_cart_button)
+    actions.perform()
+    print("Added permit to cart. Sleeping for 500 seconds before modifying...")
     time.sleep(500)
     modify_elem = driver.find_element_by_xpath(
         '//*[@id="page-body"]/div/div/div/div[1]/div[1]/div/div[2]/div[1]/div[4]/button[1]/span'
@@ -215,13 +226,22 @@ def permit_loop(driver):
           day_month_str = (est_now + timedelta(days=(ii - 2))).strftime("%m/%d")
           print("Found availability on %s" % day_month_str)
           availability_map[day_month_str] = val_xpath
+      maybe_send_notification(set(availability_map.keys()))
     except Exception as e:
-      print("Error: %s. Rerunning loop after sleeping 1 minute..." % str(e))
-      time.sleep(60)
+      print("Error: %s. Rerunning loop..." % str(e))
+      time.sleep(1)
       continue
 
-    maybe_send_notification(set(availability_map.keys()))
-    maybe_add_to_cart_and_sleep(driver, availability_map)
+    # Try this separately as we may have started booking the reservation and we
+    # don't want reload the page. Give the user at least 10 minutes to finish
+    # booking.
+    try:
+      maybe_add_to_cart_and_sleep(driver, availability_map)
+    except Exception as e:
+      print("Error: %s. Rerunning loop..." % str(e))
+      time.sleep(600)
+      continue
+
     print("Sleeping %d seconds before running next loop..." % \
             FLAGS.scrape_interval_secs)
     time.sleep(FLAGS.scrape_interval_secs)
@@ -343,7 +363,7 @@ def main(_):
     return
 
   opts = Options()
-  opts.add_argument(FLAGS.chrome_user_data_dir)
+  opts.add_argument('--user-data-dir=%s' % FLAGS.chrome_user_data_dir)
   if FLAGS.headless:
     opts.add_argument('--headless')
   driver = webdriver.Chrome(options=opts)
